@@ -50,6 +50,7 @@ deep-past-akkadian/
 │   ├── sync_up.sh                  # rsync code + data to cloud
 │   ├── sync_down.sh                # rsync checkpoints + logs from cloud
 │   ├── run_remote.sh               # SSH into cloud, run training
+│   ├── watch_remote.sh             # poll for completion, sync down, shutdown
 │   ├── export_model.sh             # merge LoRA + quantize for Kaggle upload
 │   ├── upload_kaggle_dataset.sh    # push model to Kaggle Datasets
 │   └── build_notebook.py           # auto-generate submission.ipynb from src/
@@ -743,9 +744,85 @@ ssh "${REMOTE}" "bash -lc '
 echo "Training started in tmux session '${SESSION}'."
 echo "Monitor: ssh ${REMOTE} -t 'tmux attach -t ${SESSION}'"
 echo "Or watch: ssh ${REMOTE} 'tail -f ~/deep-past/outputs/train.log'"
+echo "Or fire-and-forget: ./scripts/watch_remote.sh ${REMOTE}"
 ```
 
-### `scripts/export_model.sh`
+### `scripts/watch_remote.sh`
+
+```bash
+#!/usr/bin/env bash
+# Poll the cloud machine until training finishes, sync results down, then
+# shut down the instance to save costs. Run locally after run_remote.sh.
+#
+# Usage: watch_remote.sh user@host [--no-shutdown]
+#
+# Supports Vast.ai (vastai stop instance) and RunPod (runpodctl stop pod).
+# Pass --no-shutdown to skip the shutdown step.
+set -euo pipefail
+
+REMOTE="${1:?Usage: watch_remote.sh user@host [--no-shutdown]}"
+NO_SHUTDOWN="${2:-}"
+POLL_INTERVAL=60   # seconds between checks
+SESSION="training"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+echo "Watching ${REMOTE} for tmux session '${SESSION}' to finish..."
+echo "Polling every ${POLL_INTERVAL}s. Press Ctrl-C to stop watching (training continues)."
+
+while true; do
+    # Check if the tmux session still exists on the remote
+    if ssh -o ConnectTimeout=10 "${REMOTE}" "tmux has-session -t ${SESSION} 2>/dev/null"; then
+        # Still running — show last line of log
+        LAST_LINE=$(ssh -o ConnectTimeout=10 "${REMOTE}" \
+            "tail -1 ~/deep-past/outputs/train.log 2>/dev/null" || echo "(no log yet)")
+        echo "[$(date +%H:%M:%S)] Training in progress... ${LAST_LINE}"
+        sleep "${POLL_INTERVAL}"
+    else
+        echo ""
+        echo "[$(date +%H:%M:%S)] Training session finished!"
+        break
+    fi
+done
+
+# Sync results down
+echo "=== Syncing outputs ==="
+"${SCRIPT_DIR}/sync_down.sh" "${REMOTE}"
+
+# Check if training succeeded (look for final checkpoint)
+if [ -d "outputs/checkpoints/cloud/final" ] || \
+   ls outputs/checkpoints/cloud/checkpoint-* &>/dev/null; then
+    echo "Checkpoints downloaded successfully."
+else
+    echo "WARNING: No checkpoints found in outputs/. Training may have failed."
+    echo "Check the log: outputs/train.log"
+fi
+
+# Shutdown the cloud instance
+if [ "${NO_SHUTDOWN}" = "--no-shutdown" ]; then
+    echo "Skipping shutdown (--no-shutdown)."
+else
+    echo "=== Shutting down cloud instance ==="
+    # Try Vast.ai first, then RunPod, then generic shutdown
+    if ssh -o ConnectTimeout=10 "${REMOTE}" "command -v vastai" &>/dev/null; then
+        INSTANCE_ID=$(ssh "${REMOTE}" "cat /var/vast/instance_id 2>/dev/null || echo ''")
+        if [ -n "${INSTANCE_ID}" ]; then
+            ssh "${REMOTE}" "vastai stop instance ${INSTANCE_ID}"
+            echo "Vast.ai instance ${INSTANCE_ID} stopped."
+        else
+            echo "Could not determine Vast.ai instance ID. Stop manually."
+        fi
+    elif command -v runpodctl &>/dev/null; then
+        runpodctl stop pod
+        echo "RunPod instance stopped."
+    else
+        echo "No known cloud CLI found. Shut down the instance manually."
+        echo "  Vast.ai: vastai stop instance <id>"
+        echo "  RunPod:  runpodctl stop pod"
+    fi
+fi
+
+echo "Done."
+```
 
 ```bash
 #!/usr/bin/env bash
@@ -816,8 +893,9 @@ echo "Dataset uploaded: https://www.kaggle.com/datasets/${SLUG}"
 │                                                               │
 │  6. ./scripts/sync_up.sh user@gpu-box   # code + data + .env │
 │  7. ./scripts/run_remote.sh user@gpu-box                      │
-│     ↕ (monitor via wandb dashboard or tmux attach)            │
-│  8. ./scripts/sync_down.sh user@gpu-box                       │
+│  8. ./scripts/watch_remote.sh user@gpu-box                    │
+│     (polls until done → syncs outputs → shuts down instance)  │
+│     ... go do something else ...                              │
 │                                                               │
 │  9. uv run python src/evaluate.py              # score        │
 │ 10. uv run python src/submit.py                # CSV          │
