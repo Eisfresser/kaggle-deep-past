@@ -31,6 +31,7 @@ class GenerationEvalCallback(TrainerCallback):
         self.texts, self.references = self._load_val(cfg["val_data"])
         # Set by train.py after trainer is created
         self.trainer = None
+        self.last_scores = None
         print(f"GenerationEvalCallback: {len(self.texts)} val examples loaded")
 
     # ------------------------------------------------------------------
@@ -100,6 +101,8 @@ class GenerationEvalCallback(TrainerCallback):
 
         predictions = self._generate(model)
         results = score(predictions, self.references)
+        results["epoch"] = epoch
+        self.last_scores = results
 
         print(f"  BLEU:    {results['bleu']:.2f}")
         print(f"  chrF++:  {results['chrfpp']:.2f}")
