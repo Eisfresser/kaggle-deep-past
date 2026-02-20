@@ -4,7 +4,7 @@ max_seq_length: 2048
 load_in_4bit: true
 train_data: "data/processed/train_full.jsonl"
 val_data: "data/processed/val.jsonl"
-sweep_dir: "/runpod-volume/sweeps"
+sweep_dir: "/workspace/sweeps"
 batch_size: 4
 grad_accum: 4
 epochs: 5

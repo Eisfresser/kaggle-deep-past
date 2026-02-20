@@ -2,6 +2,7 @@
 
 Deep Past Challenge on kaggle [https://www.kaggle.com/competitions/deep-past-initiative-machine-translation] 
 
+Local smoke test
 ```bash
 # download competition data
 uv run bash scripts/download_data.sh
@@ -23,5 +24,9 @@ uv run python src/inference.py configs/local.yaml --split val
 
 ```
 
+Cloud runs
 ```bash
-https://github.com/Eisfresser/kaggle-deep-past.git
+./scripts/setup_cloud.sh https://github.com/Eisfresser/kaggle-deep-past.git
+
+
+```
