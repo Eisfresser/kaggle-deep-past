@@ -3,8 +3,11 @@
 Usage:
     uv run python src/train.py configs/local.yaml
     uv run python src/train.py configs/cloud.yaml
+    uv run python src/train.py configs/sweep_r16_lr1e-4.yaml
 """
 
+import json
+import shutil
 import sys
 from pathlib import Path
 
@@ -16,7 +19,20 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 from trl.trainer.sft_config import SFTConfig
 from trl.trainer.sft_trainer import SFTTrainer
 
+from callbacks import GenerationEvalCallback
+
 load_dotenv()
+
+
+def make_run_name(cfg: dict) -> str:
+    """Build a run name from key config fields, e.g. qwen3-1.5b_r32-a64_lr2e-4_ep5."""
+    # Short model tag: "Qwen/Qwen3-1.5B-Instruct-2507" -> "qwen3-1.5b"
+    model_tag = cfg["model_name"].split("/")[-1].split("-Instruct")[0].lower()
+    r = cfg.get("lora_r", 32)
+    a = cfg.get("lora_alpha", 64)
+    lr = cfg.get("lr", 2e-4)
+    ep = cfg.get("epochs", 3)
+    return f"{model_tag}_r{r}-a{a}_lr{lr}_ep{ep}"
 
 
 def main():
@@ -26,9 +42,14 @@ def main():
 
     cfg = yaml.safe_load(open(sys.argv[1]))
 
+    # Auto-generate run_name if not explicitly set
+    if "run_name" not in cfg:
+        cfg["run_name"] = make_run_name(cfg)
+
     model_name = cfg["model_name"]
     print(f"=== Training with {model_name} ===")
     print(f"Config: {sys.argv[1]}")
+    print(f"Run name: {cfg['run_name']}")
 
     # Quantization config
     bnb_config = None
@@ -77,9 +98,18 @@ def main():
         eval_dataset = load_dataset("json", data_files=val_data, split="train")
         print(f"Evaluating on {len(eval_dataset)} examples from {val_data}")
 
-    # Output dir
-    output_dir = cfg["output_dir"]
+    # Output dir — sweep configs use sweep_dir/<run_name>, others use output_dir
+    if "sweep_dir" in cfg:
+        output_dir = str(Path(cfg["sweep_dir"]) / cfg["run_name"])
+    else:
+        output_dir = cfg["output_dir"]
     Path(output_dir).mkdir(parents=True, exist_ok=True)
+
+    # Generation-eval callback (requires val_data)
+    callbacks = []
+    if val_data and Path(val_data).exists():
+        gen_eval_cb = GenerationEvalCallback(cfg, tokenizer)
+        callbacks.append(gen_eval_cb)
 
     # Training args
     max_seq_length = cfg.get("max_seq_length", 2048)
@@ -88,6 +118,7 @@ def main():
         processing_class=tokenizer,
         train_dataset=dataset,
         eval_dataset=eval_dataset,
+        callbacks=callbacks,
         args=SFTConfig(
             output_dir=output_dir,
             max_length=max_seq_length,
@@ -106,6 +137,10 @@ def main():
         ),
     )
 
+    # Give callback access to trainer.log() for wandb/tensorboard reporting
+    if callbacks:
+        gen_eval_cb.trainer = trainer
+
     trainer.train()
 
     # Save final checkpoint
@@ -113,6 +148,15 @@ def main():
     model.save_pretrained(final_dir)
     tokenizer.save_pretrained(final_dir)
     print(f"Final model saved to {final_dir}")
+
+    # Save config snapshot alongside the model for reproducibility
+    shutil.copy2(sys.argv[1], f"{output_dir}/config.yaml")
+
+    # Save final generation-eval scores if callback ran
+    if callbacks and gen_eval_cb.last_scores is not None:
+        scores_path = Path(output_dir) / "scores.json"
+        json.dump(gen_eval_cb.last_scores, open(scores_path, "w"), indent=2)
+        print(f"Final scores saved to {scores_path}")
 
 
 if __name__ == "__main__":
