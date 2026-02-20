@@ -37,7 +37,7 @@ else
     echo "Starting training on ${REMOTE} with ${CONFIG}..."
 fi
 
-ssh "${REMOTE}" "bash -lc '
+ssh -p "${SSH_PORT}" "${REMOTE}" "bash -lc '
     cd /workspace/deep-past
     export HF_HOME=/workspace/.cache/huggingface
     tmux kill-session -t ${SESSION} 2>/dev/null || true
@@ -46,10 +46,10 @@ ssh "${REMOTE}" "bash -lc '
 '"
 
 echo "Started in tmux session '${SESSION}'."
-echo "Monitor:          ssh ${REMOTE} -t 'tmux attach -t ${SESSION}'"
+echo "Monitor:          ssh -p ${SSH_PORT} ${REMOTE} -t 'tmux attach -t ${SESSION}'"
 if [ "${SWEEP}" = true ]; then
-    echo "Watch log:        ssh ${REMOTE} 'tail -f /workspace/deep-past/outputs/sweep.log'"
+    echo "Watch log:        ssh -p ${SSH_PORT} ${REMOTE} 'tail -f /workspace/deep-past/outputs/sweep.log'"
 else
-    echo "Watch log:        ssh ${REMOTE} 'tail -f /workspace/deep-past/outputs/train.log'"
+    echo "Watch log:        ssh -p ${SSH_PORT} ${REMOTE} 'tail -f /workspace/deep-past/outputs/train.log'"
 fi
 echo "Auto-shutdown:    ./scripts/watch_remote.sh ${REMOTE}"

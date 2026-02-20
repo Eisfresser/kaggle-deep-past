@@ -19,9 +19,9 @@ echo "Polling every ${POLL_INTERVAL}s. Press Ctrl-C to stop watching (training c
 
 while true; do
     # Check if the tmux session still exists on the remote
-    if ssh -o ConnectTimeout=10 "${REMOTE}" "tmux has-session -t ${SESSION} 2>/dev/null"; then
+    if ssh -p "${SSH_PORT}" -o ConnectTimeout=10 "${REMOTE}" "tmux has-session -t ${SESSION} 2>/dev/null"; then
         # Still running — show last line of log
-        LAST_LINE=$(ssh -o ConnectTimeout=10 "${REMOTE}" \
+        LAST_LINE=$(ssh -p "${SSH_PORT}" -o ConnectTimeout=10 "${REMOTE}" \
             "tail -1 /workspace/deep-past/outputs/train.log 2>/dev/null" || echo "(no log yet)")
         echo "[$(date +%H:%M:%S)] Training in progress... ${LAST_LINE}"
         sleep "${POLL_INTERVAL}"
@@ -52,7 +52,7 @@ else
     echo "=== Stopping RunPod instance ==="
     if command -v runpodctl &>/dev/null; then
         # Get pod ID from the SSH host or let runpodctl figure it out
-        POD_ID=$(ssh -o ConnectTimeout=10 "${REMOTE}" \
+        POD_ID=$(ssh -p "${SSH_PORT}" -o ConnectTimeout=10 "${REMOTE}" \
             'echo "${RUNPOD_POD_ID:-}"' 2>/dev/null || echo "")
         if [ -n "${POD_ID}" ]; then
             runpodctl stop pod "${POD_ID}"

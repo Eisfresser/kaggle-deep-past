@@ -28,9 +28,9 @@ if [ "${ON_POD}" = false ]; then
 
     # Upload this script and execute it remotely
     if [ -n "${REPO_URL}" ]; then
-        ssh "${REMOTE}" "bash -s -- '${REPO_URL}'" < "${SCRIPT_DIR}/setup_cloud.sh"
+        ssh -p "${SSH_PORT}" "${REMOTE}" "bash -s -- '${REPO_URL}'" < "${SCRIPT_DIR}/setup_cloud.sh"
     else
-        ssh "${REMOTE}" "bash -s" < "${SCRIPT_DIR}/setup_cloud.sh"
+        ssh -p "${SSH_PORT}" "${REMOTE}" "bash -s" < "${SCRIPT_DIR}/setup_cloud.sh"
     fi
     exit $?
 fi
