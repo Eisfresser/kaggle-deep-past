@@ -16,6 +16,8 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 from trl.trainer.sft_config import SFTConfig
 from trl.trainer.sft_trainer import SFTTrainer
 
+from callbacks import GenerationEvalCallback
+
 load_dotenv()
 
 
@@ -81,6 +83,12 @@ def main():
     output_dir = cfg["output_dir"]
     Path(output_dir).mkdir(parents=True, exist_ok=True)
 
+    # Generation-eval callback (requires val_data)
+    callbacks = []
+    if val_data and Path(val_data).exists():
+        gen_eval_cb = GenerationEvalCallback(cfg, tokenizer)
+        callbacks.append(gen_eval_cb)
+
     # Training args
     max_seq_length = cfg.get("max_seq_length", 2048)
     trainer = SFTTrainer(
@@ -88,6 +96,7 @@ def main():
         processing_class=tokenizer,
         train_dataset=dataset,
         eval_dataset=eval_dataset,
+        callbacks=callbacks,
         args=SFTConfig(
             output_dir=output_dir,
             max_length=max_seq_length,
@@ -105,6 +114,10 @@ def main():
             run_name=cfg.get("run_name", "deep-past"),
         ),
     )
+
+    # Give callback access to trainer.log() for wandb/tensorboard reporting
+    if callbacks:
+        gen_eval_cb.trainer = trainer
 
     trainer.train()
 
