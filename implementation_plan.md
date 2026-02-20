@@ -34,8 +34,7 @@ deep-past-akkadian/
 │   ├── cloud.yaml                  # full dataset, CUDA, long runs
 │   └── sweep.yaml                  # hyperparameter sweep definitions
 │
-├── src/deep_past/
-│   ├── __init__.py
+├── src/
 │   ├── preprocess.py               # Akkadian text cleaning pipeline
 │   ├── lexicon.py                  # proper noun + word lookup from OA_Lexicon_eBL.csv
 │   ├── dataset.py                  # HF Dataset construction + chat template formatting
@@ -52,7 +51,8 @@ deep-past-akkadian/
 │   ├── sync_down.sh                # rsync checkpoints + logs from cloud
 │   ├── run_remote.sh               # SSH into cloud, run training
 │   ├── export_model.sh             # merge LoRA + quantize for Kaggle upload
-│   └── upload_kaggle_dataset.sh    # push model to Kaggle Datasets
+│   ├── upload_kaggle_dataset.sh    # push model to Kaggle Datasets
+│   └── build_notebook.py           # auto-generate submission.ipynb from src/
 │
 ├── notebooks/
 │   └── submission.ipynb            # final Kaggle submission notebook (offline)
@@ -99,12 +99,13 @@ mac = ["mlx-lm>=0.20"]
 # Cloud CUDA (flash attention for speed)
 cuda = ["flash-attn>=2.7"]
 
-[project.scripts]
-dp-preprocess = "deep_past.preprocess:main"
-dp-train = "deep_past.train:main"
-dp-infer = "deep_past.inference:main"
-dp-eval = "deep_past.evaluate:main"
-dp-submit = "deep_past.submit:main"
+[tool.uv]
+# src/ is on the import path; no package to install
+# Run modules directly: uv run python -m preprocess, etc.
+
+[tool.setuptools]
+# Not a distributable package — just scripts
+py-modules = []
 ```
 
 **Init and sync:**
@@ -119,12 +120,53 @@ uv sync --extra mac              # + MLX on Mac
 uv sync --extra cuda             # + flash-attn on CUDA
 ```
 
+**Running scripts:** Since `src/` is a flat directory (not a package), run
+modules directly:
+
+```bash
+uv run python src/preprocess.py            # or with config arg
+uv run python src/train.py configs/cloud.yaml
+uv run python src/inference.py configs/cloud.yaml
+uv run python src/evaluate.py
+uv run python src/submit.py
+```
+
 ---
 
 ## 4. Part A — First Submission (End-to-End Baseline)
 
 The goal is to get a score on the leaderboard as fast as possible. Train on
 document-level pairs directly (no sentence alignment yet), submit, then iterate.
+
+### A0. Zero-Shot Baseline (no training)
+
+Before any fine-tuning, run the base Qwen3-1.5B-Instruct on the validation set
+to establish a floor score. This serves two purposes:
+
+1. **Validates the full pipeline end-to-end** — preprocessing, inference,
+   post-processing, evaluation, and submission generation all work before
+   investing time in training.
+2. **Establishes the baseline** — knowing the zero-shot score tells you exactly
+   how much value fine-tuning adds. If zero-shot is already decent, prompt
+   engineering (Part B3) may be higher leverage than training.
+
+```bash
+# Preprocess data
+uv run python src/preprocess.py
+
+# Build dataset (needed for val split, even though we don't train yet)
+uv run python src/dataset.py
+
+# Run inference with base model (no LoRA checkpoint)
+uv run python src/inference.py configs/local.yaml --no-lora
+
+# Evaluate
+uv run python src/evaluate.py
+```
+
+The `--no-lora` flag (or equivalent config toggle) skips loading a LoRA
+checkpoint and runs the base model directly. Record the zero-shot geomean
+score as the floor to beat.
 
 ### A1. Preprocessing (`preprocess.py`)
 
@@ -407,15 +449,39 @@ def score(predictions: list[str], references: list[str]) -> dict:
 2. **Upload**: Push merged model to Kaggle Datasets
 3. **Notebook**: Load model, preprocess test.csv, generate, postprocess, write `submission.csv`
 
-The notebook skeleton (`notebooks/submission.ipynb`):
+**How `src/` code gets into the notebook:**
+
+The Kaggle notebook runs offline with no access to the repo or `pip install`.
+The submission notebook must be self-contained. Strategy:
+
+1. The notebook **inlines** the needed functions from `src/` directly into
+   notebook cells. Only three modules are needed at inference time:
+   `preprocess.py`, `inference.py`, and `postprocess.py`. These are small,
+   pure-Python files with minimal dependencies.
+
+2. A script `scripts/build_notebook.py` **auto-generates** the submission
+   notebook by reading the source files and inserting them as cells. This
+   avoids manual copy-paste drift. Run it before each Kaggle submission:
+
+   ```bash
+   uv run python scripts/build_notebook.py    # → notebooks/submission.ipynb
+   ```
+
+3. The merged model and any data files (e.g., lexicon CSV for proper noun
+   correction) are uploaded as a **Kaggle Dataset** and accessed via
+   `/kaggle/input/...`.
+
+The generated notebook skeleton:
 
 ```python
-# Cell 1: Install deps (from pre-packaged Kaggle Dataset)
-# Cell 2: Load merged Qwen3-1.5B from /kaggle/input/...
-# Cell 3: Load + preprocess test.csv (same pipeline as training)
-# Cell 4: Batched translation generation (greedy, thinking disabled)
-# Cell 5: Post-process all outputs
-# Cell 6: Write submission.csv
+# Cell 1: Inline src/preprocess.py (cleaning functions)
+# Cell 2: Inline src/inference.py (batched translation)
+# Cell 3: Inline src/postprocess.py (output cleaning)
+# Cell 4: Load merged Qwen3-1.5B from /kaggle/input/...
+# Cell 5: Load + preprocess test.csv
+# Cell 6: Generate translations (batched, greedy, thinking disabled)
+# Cell 7: Post-process all outputs
+# Cell 8: Write submission.csv
 ```
 
 At 1.5B parameters with 4-bit quantization and greedy decoding, expect ~1-3
@@ -573,6 +639,9 @@ echo "Data downloaded to data/raw/"
 
 ```bash
 #!/usr/bin/env bash
+# Run ON the cloud machine after first SSH login.
+# Expects: Ubuntu + CUDA drivers pre-installed (standard on Vast.ai/RunPod)
+# Expects: .env already synced by sync_up.sh (contains WANDB_API_KEY etc.)
 set -euo pipefail
 
 echo "=== Installing uv ==="
@@ -588,17 +657,35 @@ echo "=== Installing Python + deps ==="
 uv python install 3.11
 uv sync --extra cuda
 
-echo "=== Setting up wandb ==="
-echo "Run: wandb login"
+echo "=== Loading .env ==="
+if [ -f .env ]; then
+    set -a; source .env; set +a
+    echo "Loaded .env (WANDB_API_KEY, KAGGLE_USERNAME, etc.)"
+else
+    echo "WARNING: No .env found. Run sync_up.sh first or set vars manually."
+fi
+
+echo "=== Verify GPU ==="
+python -c "import torch; print(f'CUDA available: {torch.cuda.is_available()}, GPUs: {torch.cuda.device_count()}')"
 
 echo "=== Done. Run training with: ==="
-echo "cd ~/deep-past && uv run dp-train configs/cloud.yaml"
+echo "cd ~/deep-past && uv run python src/train.py configs/cloud.yaml"
+```
+
+**`.env` file** (local, `.gitignore`'d — create once on the dev machine):
+
+```bash
+WANDB_API_KEY=your-key-here
+KAGGLE_USERNAME=your-username
+KAGGLE_KEY=your-kaggle-api-key
 ```
 
 ### `scripts/sync_up.sh`
 
 ```bash
 #!/usr/bin/env bash
+# Sync code, data, and .env (for WANDB_API_KEY etc.) to cloud machine.
+# Usage: sync_up.sh user@host
 set -euo pipefail
 
 REMOTE="${1:?Usage: sync_up.sh user@host}"
@@ -615,6 +702,10 @@ rsync -avz --progress \
 
 echo "Synced to ${REMOTE}:~/deep-past/"
 ```
+
+Note: `.env` is synced intentionally so that `WANDB_API_KEY` and
+`KAGGLE_USERNAME`/`KAGGLE_KEY` are available on the cloud machine. The
+`.env` file is `.gitignore`'d so it never enters version control.
 
 ### `scripts/sync_down.sh`
 
@@ -646,7 +737,7 @@ ssh "${REMOTE}" "bash -lc '
     cd ~/deep-past
     tmux kill-session -t ${SESSION} 2>/dev/null || true
     tmux new-session -d -s ${SESSION} \
-        \"source \\\"$HOME/.local/bin/env\\\" && uv run dp-train ${CONFIG} 2>&1 | tee outputs/train.log\"
+        \"source \\\"$HOME/.local/bin/env\\\" && set -a && source .env && set +a && uv run python src/train.py ${CONFIG} 2>&1 | tee outputs/train.log\"
 '"
 
 echo "Training started in tmux session '${SESSION}'."
@@ -714,27 +805,28 @@ echo "Dataset uploaded: https://www.kaggle.com/datasets/${SLUG}"
 ## 7. Development Workflow
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│  MacBook Pro M3                                         │
-│                                                         │
-│  1. Edit code in src/deep_past/                         │
-│  2. uv run dp-preprocess          # build dataset       │
-│  3. uv run dp-train configs/local.yaml  # smoke test    │
-│  4. uv run dp-infer ...           # quick sanity check  │
-│  5. git commit + push                                   │
-│                                                         │
-│  6. ./scripts/sync_up.sh user@gpu-box                   │
-│  7. ./scripts/run_remote.sh user@gpu-box                │
-│     ↕ (monitor via wandb dashboard or tmux attach)      │
-│  8. ./scripts/sync_down.sh user@gpu-box                 │
-│                                                         │
-│  9. uv run dp-eval                # score locally       │
-│ 10. uv run dp-submit              # generate CSV        │
-│                                                         │
-│ 11. ./scripts/export_model.sh     # merge LoRA          │
-│ 12. ./scripts/upload_kaggle_dataset.sh user/model       │
-│ 13. Submit notebook on Kaggle                           │
-└─────────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────────┐
+│  MacBook Pro M3                                               │
+│                                                               │
+│  1. Edit code in src/                                         │
+│  2. uv run python src/preprocess.py            # build data   │
+│  3. uv run python src/train.py configs/local.yaml  # smoke    │
+│  4. uv run python src/inference.py ...         # sanity check │
+│  5. git commit + push                                         │
+│                                                               │
+│  6. ./scripts/sync_up.sh user@gpu-box   # code + data + .env │
+│  7. ./scripts/run_remote.sh user@gpu-box                      │
+│     ↕ (monitor via wandb dashboard or tmux attach)            │
+│  8. ./scripts/sync_down.sh user@gpu-box                       │
+│                                                               │
+│  9. uv run python src/evaluate.py              # score        │
+│ 10. uv run python src/submit.py                # CSV          │
+│                                                               │
+│ 11. ./scripts/export_model.sh                  # merge LoRA   │
+│ 12. ./scripts/upload_kaggle_dataset.sh user/model             │
+│ 13. uv run python scripts/build_notebook.py    # gen notebook │
+│ 14. Submit notebook on Kaggle                                 │
+└───────────────────────────────────────────────────────────────┘
 ```
 
 ---
