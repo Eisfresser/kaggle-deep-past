@@ -44,6 +44,12 @@ Cloud sweep
 # upload best model to kaggle
 ./scripts/upload_kaggle_dataset.sh
 
+# build the notebook from py files
+uv run python scripts/build_notebook.py
+
+# push notebook to kaggle
+uv run kaggle kernels push -p notebooks/
+
 
 
 ```

@@ -8,13 +8,15 @@ Usage:
 """
 
 import json
+import uuid
 from pathlib import Path
 
 SRC_DIR = Path("src")
 OUT_PATH = Path("notebooks/submission.ipynb")
 
-# Kaggle dataset path where the merged model is uploaded
-MODEL_DATASET = "/kaggle/input/deep-past-model"
+# Kaggle paths — kernels push mounts under datasets/<user>/ and competitions/
+MODEL_DATASET = "/kaggle/input/datasets/eisfresser/deep-past-model"
+COMPETITION_DATA = "/kaggle/input/competitions/deep-past-initiative-machine-translation"
 
 
 def read_source(filename: str, drop_funcs: set[str] | None = None,
@@ -92,7 +94,8 @@ def make_cell(cell_type: str, source: str) -> dict:
     cell = {
         "cell_type": cell_type,
         "metadata": {},
-        "source": source.split("\n"),
+        "id": uuid.uuid4().hex[:8],
+        "source": [line + "\n" for line in source.split("\n")[:-1]] + [source.split("\n")[-1]],
     }
     if cell_type == "code":
         cell["execution_count"] = None
@@ -106,6 +109,20 @@ def build_notebook():
 
     # Cell 0: Title
     cells.append(make_cell("markdown", "# Deep Past Challenge — Akkadian → English\n\nAuto-generated submission notebook. Do not edit manually.\nRegenerate with: `uv run python scripts/build_notebook.py`"))
+
+    # Debug: show mounted datasets
+    cells.append(make_cell("code", """import os
+print("Available inputs:")
+for d in sorted(os.listdir("/kaggle/input")):
+    print(f"  /kaggle/input/{d}/")
+    try:
+        files = os.listdir(f"/kaggle/input/{d}")
+        for f in files[:5]:
+            print(f"    {f}")
+        if len(files) > 5:
+            print(f"    ... ({len(files)} total)")
+    except Exception as e:
+        print(f"    ERROR: {e}")"""))
 
     # Cell 1: Inline preprocess.py (only cleaning functions needed)
     cells.append(make_cell("markdown", "## Preprocessing (from src/preprocess.py)"))
@@ -125,10 +142,20 @@ def build_notebook():
 
     # Cell 3: Load model (before inference cell so torch is available)
     cells.append(make_cell("markdown", "## Load Model"))
-    cells.append(make_cell("code", f"""import torch
+    cells.append(make_cell("code", f"""import os
+import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 MODEL_PATH = "{MODEL_DATASET}"
+
+# Find model dir — datasets may nest files in a subdirectory
+if not os.path.isfile(os.path.join(MODEL_PATH, "config.json")):
+    subdirs = [d for d in os.listdir(MODEL_PATH)
+               if os.path.isdir(os.path.join(MODEL_PATH, d))]
+    if subdirs:
+        MODEL_PATH = os.path.join(MODEL_PATH, subdirs[0])
+print(f"Model dir: {{MODEL_PATH}}")
+print(os.listdir(MODEL_PATH))
 
 tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
 model = AutoModelForCausalLM.from_pretrained(
@@ -152,20 +179,20 @@ print(f"Model loaded from {{MODEL_PATH}}")"""))
 
     # Cell 5: Load + preprocess test data
     cells.append(make_cell("markdown", "## Load & Preprocess Test Data"))
-    cells.append(make_cell("code", """import pandas as pd
+    cells.append(make_cell("code", f"""import pandas as pd
 
-test_df = pd.read_csv("/kaggle/input/deep-past-initiative-machine-translation/test.csv")
-print(f"Test set: {len(test_df)} rows")
+test_df = pd.read_csv("{COMPETITION_DATA}/test.csv")
+print(f"Test set: {{len(test_df)}} rows")
 print(test_df.head())
 
 # Find transliteration column
-cols = {c.lower(): c for c in test_df.columns}
+cols = {{c.lower(): c for c in test_df.columns}}
 trans_col = cols.get("transliteration", cols.get("source", ""))
 if not trans_col:
-    raise ValueError(f"No transliteration column found: {list(test_df.columns)}")
+    raise ValueError(f"No transliteration column found: {{list(test_df.columns)}}")
 
 test_df["transliteration_clean"] = test_df[trans_col].apply(clean_transliteration)
-print(f"Cleaned {len(test_df)} transliterations")"""))
+print(f"Cleaned {{len(test_df)}} transliterations")"""))
 
     # Cell 6: Generate translations
     cells.append(make_cell("markdown", "## Generate Translations"))
