@@ -1,14 +1,41 @@
 #!/usr/bin/env bash
-# Run ON the RunPod machine after first SSH login.
-# Idempotent — safe to re-run after pod restart. Skips steps already done.
+# Setup script for the RunPod cloud machine.
+# Can be run EITHER locally (Mac) or directly on the pod — it detects which.
 #
-# Uses /workspace/ (persistent volume) so Python, deps, model cache, and
-# checkpoints survive pod stop/restart.
+# From Mac:     setup_cloud.sh [user@host] [git-repo-url]
+# On the pod:   setup_cloud.sh [git-repo-url]
 #
-# First run:  setup_cloud.sh <git-repo-url>
-# After restart: setup_cloud.sh  (no args needed — repo already there)
+# When run locally it SSHs into the pod, uploads itself, and executes there.
+# Uses RUNPOD_SSH_HOST from .env when no host arg is given (same as other scripts).
 set -euo pipefail
 
+# ── Detect: are we on the pod or on a local dev machine? ─────────────────
+if [ -d /workspace ] && [ -f /etc/hostname ] && grep -qi runpod /etc/hostname 2>/dev/null; then
+    ON_POD=true
+elif [ -d /workspace ] && [ -n "${RUNPOD_POD_ID:-}" ]; then
+    ON_POD=true
+else
+    ON_POD=false
+fi
+
+if [ "${ON_POD}" = false ]; then
+    # ── Running locally — forward to the pod via SSH ──────────────────────
+    SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+    source "${SCRIPT_DIR}/_resolve_remote.sh" "${1:-}"
+    REPO_URL="${2:-}"
+
+    echo "=== Running setup_cloud.sh on ${REMOTE} via SSH ==="
+
+    # Upload this script and execute it remotely
+    if [ -n "${REPO_URL}" ]; then
+        ssh "${REMOTE}" "bash -s -- '${REPO_URL}'" < "${SCRIPT_DIR}/setup_cloud.sh"
+    else
+        ssh "${REMOTE}" "bash -s" < "${SCRIPT_DIR}/setup_cloud.sh"
+    fi
+    exit $?
+fi
+
+# ── From here on we are running ON the pod ────────────────────────────────
 WORK=/workspace/deep-past
 
 # ── uv ──────────────────────────────────────────────────────────────────────
