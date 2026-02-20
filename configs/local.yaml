@@ -1,0 +1,16 @@
+model_name: "Qwen/Qwen3-1.5B-Instruct-2507"
+max_seq_length: 512
+load_in_4bit: true
+train_data: "data/processed/train_small.jsonl"
+val_data: "data/processed/val.jsonl"
+output_dir: "outputs/checkpoints/local"
+batch_size: 1
+grad_accum: 4
+epochs: 1
+lr: 2e-4
+lora_r: 16
+lora_alpha: 32
+run_name: "local-smoke-test"
+report_to: "none"
+inference_batch_size: 4
+max_new_tokens: 256
