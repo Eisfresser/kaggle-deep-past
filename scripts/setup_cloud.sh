@@ -45,7 +45,7 @@ if [ "${ON_POD}" = false ]; then
 
     _TMUX_CMD="/tmp/setup_cloud.sh${REPO_URL:+ '${REPO_URL}'} 2>&1 | tee /tmp/setup.log"
     ssh -p "${SSH_PORT}" "${REMOTE}" \
-        "command -v tmux >/dev/null || { apt-get update -qq && apt-get install -y -q tmux; }; \
+        "command -v tmux >/dev/null || { apt-get update -qq && apt-get install -y -q tmux rsync btop; }; \
          tmux kill-session -t setup 2>/dev/null || true; \
          tmux new-session -d -s setup \"${_TMUX_CMD}\""
     unset _TMUX_CMD

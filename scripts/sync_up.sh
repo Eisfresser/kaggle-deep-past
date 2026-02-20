@@ -7,7 +7,7 @@ set -euo pipefail
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 source "${PROJECT_DIR}/scripts/_resolve_remote.sh" "${1:-}"
 
-rsync -avz --progress -e "ssh -p ${SSH_PORT}" \
+rsync -avz --progress --no-owner --no-group -e "ssh -p ${SSH_PORT}" \
     --exclude '.git' \
     --exclude '__pycache__' \
     --exclude 'outputs/checkpoints' \
