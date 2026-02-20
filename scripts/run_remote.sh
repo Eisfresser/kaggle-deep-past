@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
+# Usage: run_remote.sh [user@host] [config]   (defaults to root@RUNPOD_SSH_HOST from .env)
 set -euo pipefail
 
-REMOTE="${1:?Usage: run_remote.sh user@host [config]}"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "${SCRIPT_DIR}/_resolve_remote.sh" "${1:-}"
 CONFIG="${2:-configs/cloud.yaml}"
 SESSION="training"
 

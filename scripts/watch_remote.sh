@@ -2,17 +2,17 @@
 # Poll the RunPod machine until training finishes, sync results down, then
 # stop the pod to save costs. Run locally after run_remote.sh.
 #
-# Usage: watch_remote.sh user@host [--no-shutdown]
+# Usage: watch_remote.sh [user@host] [--no-shutdown]   (defaults to root@RUNPOD_SSH_HOST from .env)
 #
 # Requires: runpodctl installed locally (https://github.com/runpod/runpodctl)
 # Pass --no-shutdown to skip the shutdown step.
 set -euo pipefail
 
-REMOTE="${1:?Usage: watch_remote.sh user@host [--no-shutdown]}"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "${SCRIPT_DIR}/_resolve_remote.sh" "${1:-}"
 NO_SHUTDOWN="${2:-}"
 POLL_INTERVAL=60   # seconds between checks
 SESSION="training"
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 echo "Watching ${REMOTE} for tmux session '${SESSION}' to finish..."
 echo "Polling every ${POLL_INTERVAL}s. Press Ctrl-C to stop watching (training continues)."
