@@ -22,3 +22,6 @@ uv run python src/train.py configs/local.yaml
 uv run python src/inference.py configs/local.yaml --split val
 
 ```
+
+```bash
+https://github.com/Eisfresser/kaggle-deep-past.git

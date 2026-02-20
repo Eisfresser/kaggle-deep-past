@@ -2,7 +2,8 @@
 # Setup script for the RunPod cloud machine.
 # Can be run EITHER locally (Mac) or directly on the pod — it detects which.
 #
-# From Mac:     setup_cloud.sh [user@host] [git-repo-url]
+# From Mac:     setup_cloud.sh [git-repo-url]            (host from .env)
+#               setup_cloud.sh [user@host] [git-repo-url] (explicit host)
 # On the pod:   setup_cloud.sh [git-repo-url]
 #
 # When run locally it SSHs into the pod, uploads itself, and executes there.
@@ -10,9 +11,8 @@
 set -euo pipefail
 
 # ── Detect: are we on the pod or on a local dev machine? ─────────────────
-if [ -d /workspace ] && [ -f /etc/hostname ] && grep -qi runpod /etc/hostname 2>/dev/null; then
-    ON_POD=true
-elif [ -d /workspace ] && [ -n "${RUNPOD_POD_ID:-}" ]; then
+# /workspace is the RunPod persistent volume — it won't exist on a Mac.
+if [ -d /workspace ]; then
     ON_POD=true
 else
     ON_POD=false
@@ -21,8 +21,20 @@ fi
 if [ "${ON_POD}" = false ]; then
     # ── Running locally — forward to the pod via SSH ──────────────────────
     SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-    source "${SCRIPT_DIR}/_resolve_remote.sh" "${1:-}"
-    REPO_URL="${2:-}"
+
+    # If $1 looks like a URL (https:// or git@), it's the repo URL, not a host.
+    # This allows: setup_cloud.sh <url>           (use .env host)
+    #              setup_cloud.sh <host> <url>     (explicit host)
+    if [[ "${1:-}" == https://* || "${1:-}" == git@* ]]; then
+        _HOST_ARG=""
+        REPO_URL="${1}"
+    else
+        _HOST_ARG="${1:-}"
+        REPO_URL="${2:-}"
+    fi
+
+    source "${SCRIPT_DIR}/_resolve_remote.sh" "${_HOST_ARG}"
+    unset _HOST_ARG
 
     echo "=== Running setup_cloud.sh on ${REMOTE} via SSH ==="
 
