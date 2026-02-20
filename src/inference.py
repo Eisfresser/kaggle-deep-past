@@ -15,8 +15,12 @@ from pathlib import Path
 import pandas as pd
 import torch
 import yaml
+from dotenv import load_dotenv
 from peft import PeftModel
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+
+load_dotenv()
+
 
 SYSTEM_PROMPT = (
     "You are an expert translator of Old Assyrian Akkadian cuneiform texts "
@@ -45,6 +49,7 @@ def load_model(cfg: dict, no_lora: bool = False):
         quantization_config=bnb_config,
         device_map="auto",
         torch_dtype="auto",
+        tie_word_embeddings=False,
     )
     tokenizer = AutoTokenizer.from_pretrained(model_name)
 
@@ -104,6 +109,7 @@ def translate_batch(
                 do_sample=False,
                 temperature=None,
                 top_p=None,
+                top_k=None,
             )
 
         for j, (orig_idx, _) in enumerate(batch):
@@ -141,7 +147,7 @@ def main():
             print(f"ERROR: {data_path} not found. Run src/dataset.py first.")
             sys.exit(1)
         import json
-        records = [json.loads(l) for l in open(data_path)]
+        records = [json.loads(ld) for ld in open(data_path)]
         texts = [r["messages"][1]["content"].removeprefix("Translate: ") for r in records]
         references = [r["messages"][2]["content"] for r in records]
     else:

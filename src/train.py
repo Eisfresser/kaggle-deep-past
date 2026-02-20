@@ -10,9 +10,13 @@ from pathlib import Path
 
 import yaml
 from datasets import load_dataset
+from dotenv import load_dotenv
 from peft import LoraConfig, TaskType, get_peft_model
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
-from trl import SFTConfig, SFTTrainer
+from trl.trainer.sft_config import SFTConfig
+from trl.trainer.sft_trainer import SFTTrainer
+
+load_dotenv()
 
 
 def main():
@@ -41,6 +45,7 @@ def main():
         quantization_config=bnb_config,
         device_map="auto",
         torch_dtype="auto",
+        tie_word_embeddings=False,
     )
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     if tokenizer.pad_token is None:
@@ -79,22 +84,23 @@ def main():
     # Training args
     max_seq_length = cfg.get("max_seq_length", 2048)
     trainer = SFTTrainer(
-        model=model,
-        tokenizer=tokenizer,
+        model=model,  # type: ignore[arg-type]
+        processing_class=tokenizer,
         train_dataset=dataset,
         eval_dataset=eval_dataset,
         args=SFTConfig(
             output_dir=output_dir,
-            max_seq_length=max_seq_length,
+            max_length=max_seq_length,
             per_device_train_batch_size=cfg.get("batch_size", 2),
             gradient_accumulation_steps=cfg.get("grad_accum", 4),
             num_train_epochs=cfg.get("epochs", 3),
-            learning_rate=cfg.get("lr", 2e-4),
-            warmup_ratio=0.1,
+            learning_rate=float(cfg.get("lr", 2e-4)),
+            warmup_steps=10,
             logging_steps=10,
             save_strategy="epoch",
             eval_strategy="epoch" if eval_dataset is not None else "no",
             bf16=True,
+            dataloader_pin_memory=False,
             report_to=cfg.get("report_to", "wandb"),
             run_name=cfg.get("run_name", "deep-past"),
         ),

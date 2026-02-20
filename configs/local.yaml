@@ -1,6 +1,6 @@
-model_name: "Qwen/Qwen3-1.5B-Instruct-2507"
+model_name: "Qwen/Qwen3-1.7B"
 max_seq_length: 512
-load_in_4bit: true
+load_in_4bit: false
 train_data: "data/processed/train_small.jsonl"
 val_data: "data/processed/val.jsonl"
 output_dir: "outputs/checkpoints/local"
