@@ -1,0 +1,31 @@
+[project]
+name = "deep-past-akkadian"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "torch>=2.4",
+    "transformers>=4.51",
+    "peft>=0.15",
+    "trl>=0.17",
+    "datasets>=3.0",
+    "accelerate>=1.0",
+    "bitsandbytes>=0.45",
+    "sacrebleu>=2.4",
+    "pyyaml",
+    "pandas",
+    "wandb",
+]
+
+[project.optional-dependencies]
+# Apple Silicon local dev (skip bitsandbytes, use MLX fallback)
+mac = ["mlx-lm>=0.20"]
+# Cloud CUDA (flash attention for speed)
+cuda = ["flash-attn>=2.7"]
+
+[tool.uv]
+# src/ is on the import path; no package to install
+# Run modules directly: uv run python src/preprocess.py, etc.
+
+[tool.setuptools]
+# Not a distributable package — just scripts
+py-modules = []

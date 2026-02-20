@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Sync code, data, and .env (for WANDB_API_KEY etc.) to RunPod machine.
+# Usage: sync_up.sh user@host
+set -euo pipefail
+
+REMOTE="${1:?Usage: sync_up.sh user@host}"
+PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+
+rsync -avz --progress \
+    --exclude '.git' \
+    --exclude '__pycache__' \
+    --exclude 'outputs/checkpoints' \
+    --exclude 'outputs/merged' \
+    --exclude 'wandb' \
+    --exclude '.venv' \
+    "${PROJECT_DIR}/" "${REMOTE}:~/deep-past/"
+
+echo "Synced to ${REMOTE}:~/deep-past/"
