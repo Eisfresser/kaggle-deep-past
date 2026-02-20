@@ -17,16 +17,21 @@ OUT_PATH = Path("notebooks/submission.ipynb")
 MODEL_DATASET = "/kaggle/input/deep-past-model"
 
 
-def read_source(filename: str) -> str:
-    """Read a source file, stripping the module docstring and __main__ block."""
+def read_source(filename: str, drop_funcs: set[str] | None = None,
+                drop_imports: set[str] | None = None) -> str:
+    """Read a source file, stripping docstring, __main__, and optionally
+    specific top-level functions and import lines."""
     path = SRC_DIR / filename
     content = path.read_text()
 
     lines = content.split("\n")
     result = []
     skip_main = False
+    skip_func = False
     in_docstring = False
     docstring_done = False
+    drop_funcs = drop_funcs or set()
+    drop_imports = drop_imports or set()
 
     for line in lines:
         # Skip module-level docstrings (triple-quoted at the top)
@@ -37,7 +42,6 @@ def read_source(filename: str) -> str:
                     docstring_done = True
                     continue
                 elif line.strip().endswith('"""') and line.strip() != '"""':
-                    # Single-line docstring
                     docstring_done = True
                     continue
                 else:
@@ -56,7 +60,21 @@ def read_source(filename: str) -> str:
         if skip_main:
             continue
 
-        # Skip standalone import of sys.path manipulation
+        # Skip top-level functions by name (and their entire body)
+        if any(line.startswith(f"def {fn}(") for fn in drop_funcs):
+            skip_func = True
+            continue
+        if skip_func:
+            if line and not line[0].isspace() and line.strip():
+                skip_func = False
+            else:
+                continue
+
+        # Skip specific imports
+        if drop_imports and any(tok in line for tok in drop_imports):
+            continue
+
+        # Skip sys.path manipulation
         if "sys.path.insert" in line:
             continue
 
@@ -89,19 +107,23 @@ def build_notebook():
     # Cell 0: Title
     cells.append(make_cell("markdown", "# Deep Past Challenge — Akkadian → English\n\nAuto-generated submission notebook. Do not edit manually.\nRegenerate with: `uv run python scripts/build_notebook.py`"))
 
-    # Cell 1: Inline preprocess.py
+    # Cell 1: Inline preprocess.py (only cleaning functions needed)
     cells.append(make_cell("markdown", "## Preprocessing (from src/preprocess.py)"))
-    cells.append(make_cell("code", read_source("preprocess.py")))
+    cells.append(make_cell("code", read_source(
+        "preprocess.py",
+        drop_funcs={"main", "process_train", "process_test"},
+        drop_imports={"from pathlib", "import pandas", "RAW_DIR", "PROC_DIR"},
+    )))
 
     # Cell 2: Inline postprocess.py
     cells.append(make_cell("markdown", "## Post-processing (from src/postprocess.py)"))
-    cells.append(make_cell("code", read_source("postprocess.py")))
+    cells.append(make_cell("code", read_source(
+        "postprocess.py",
+        drop_funcs={"main"},
+        drop_imports={"import re", "import sys", "from pathlib", "import pandas"},
+    )))
 
-    # Cell 3: Inline inference functions
-    cells.append(make_cell("markdown", "## Inference (from src/inference.py)"))
-    cells.append(make_cell("code", read_source("inference.py")))
-
-    # Cell 4: Load model
+    # Cell 3: Load model (before inference cell so torch is available)
     cells.append(make_cell("markdown", "## Load Model"))
     cells.append(make_cell("code", f"""import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -116,6 +138,17 @@ model = AutoModelForCausalLM.from_pretrained(
 )
 model.eval()
 print(f"Model loaded from {{MODEL_PATH}}")"""))
+
+    # Cell 4: Inline inference functions (only translate_batch + SYSTEM_PROMPT)
+    cells.append(make_cell("markdown", "## Inference (from src/inference.py)"))
+    cells.append(make_cell("code", read_source(
+        "inference.py",
+        drop_funcs={"main", "load_model"},
+        drop_imports={"import argparse", "import sys", "from pathlib",
+                      "import pandas", "import torch", "import yaml",
+                      "from dotenv", "load_dotenv", "from peft",
+                      "BitsAndBytesConfig", "from transformers"},
+    )))
 
     # Cell 5: Load + preprocess test data
     cells.append(make_cell("markdown", "## Load & Preprocess Test Data"))

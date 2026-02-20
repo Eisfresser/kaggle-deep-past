@@ -30,13 +30,19 @@ Cloud sweep
 ./scripts/setup_cloud.sh https://github.com/Eisfresser/kaggle-deep-past.git
 
 # upload latest code and .env
-scripts/sync_up.sh
+./scripts/sync_up.sh
 
 # start sweep
-scripts/run_remote.sh --sweep
+./scripts/run_remote.sh --sweep
 
 # wait for completion, syncs down automatically and stops the pod
 ./scripts/watch_remote.sh
+
+# pick the best model and export it
+./scripts/export_model.sh sweeps/qwen3-1.7b_r64-a128_lr2e-4_ep5/final outputs/merged
+
+# upload best model to kaggle
+./scripts/upload_kaggle_dataset.sh
 
 
 
