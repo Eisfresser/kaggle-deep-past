@@ -1,8 +1,8 @@
 # Deep Past Challenge — Implementation Plan
 
 **Goal:** Fine-tune Qwen3-1.5B-Instruct-2507 for Akkadian → English translation
-**Dev:** MacBook Pro M3 18 GB · **Train:** Cloud CUDA (Vast.ai / RunPod)
-**Tooling:** `uv`, public GitHub repo, SSH-based cloud workflow
+**Dev:** MacBook Pro M3 18 GB · **Train:** RunPod cloud GPU
+**Tooling:** `uv`, public GitHub repo, SSH-based RunPod workflow
 **Deadline:** March 23, 2026
 
 ---
@@ -46,10 +46,10 @@ deep-past-akkadian/
 │
 ├── scripts/
 │   ├── download_data.sh            # Kaggle API → data/raw/
-│   ├── setup_cloud.sh              # bootstrap cloud GPU machine
-│   ├── sync_up.sh                  # rsync code + data to cloud
-│   ├── sync_down.sh                # rsync checkpoints + logs from cloud
-│   ├── run_remote.sh               # SSH into cloud, run training
+│   ├── setup_cloud.sh              # bootstrap RunPod machine
+│   ├── sync_up.sh                  # rsync code + data to RunPod
+│   ├── sync_down.sh                # rsync checkpoints + logs from RunPod
+│   ├── run_remote.sh               # SSH into RunPod, run training
 │   ├── watch_remote.sh             # poll for completion, sync down, shutdown
 │   ├── export_model.sh             # merge LoRA + quantize for Kaggle upload
 │   ├── upload_kaggle_dataset.sh    # push model to Kaggle Datasets
@@ -640,8 +640,8 @@ echo "Data downloaded to data/raw/"
 
 ```bash
 #!/usr/bin/env bash
-# Run ON the cloud machine after first SSH login.
-# Expects: Ubuntu + CUDA drivers pre-installed (standard on Vast.ai/RunPod)
+# Run ON the RunPod machine after first SSH login.
+# Expects: Ubuntu + CUDA drivers pre-installed (standard on RunPod)
 # Expects: .env already synced by sync_up.sh (contains WANDB_API_KEY etc.)
 set -euo pipefail
 
@@ -685,7 +685,7 @@ KAGGLE_KEY=your-kaggle-api-key
 
 ```bash
 #!/usr/bin/env bash
-# Sync code, data, and .env (for WANDB_API_KEY etc.) to cloud machine.
+# Sync code, data, and .env (for WANDB_API_KEY etc.) to RunPod machine.
 # Usage: sync_up.sh user@host
 set -euo pipefail
 
@@ -705,7 +705,7 @@ echo "Synced to ${REMOTE}:~/deep-past/"
 ```
 
 Note: `.env` is synced intentionally so that `WANDB_API_KEY` and
-`KAGGLE_USERNAME`/`KAGGLE_KEY` are available on the cloud machine. The
+`KAGGLE_USERNAME`/`KAGGLE_KEY` are available on the RunPod machine. The
 `.env` file is `.gitignore`'d so it never enters version control.
 
 ### `scripts/sync_down.sh`
@@ -751,12 +751,12 @@ echo "Or fire-and-forget: ./scripts/watch_remote.sh ${REMOTE}"
 
 ```bash
 #!/usr/bin/env bash
-# Poll the cloud machine until training finishes, sync results down, then
-# shut down the instance to save costs. Run locally after run_remote.sh.
+# Poll the RunPod machine until training finishes, sync results down, then
+# stop the pod to save costs. Run locally after run_remote.sh.
 #
 # Usage: watch_remote.sh user@host [--no-shutdown]
 #
-# Supports Vast.ai (vastai stop instance) and RunPod (runpodctl stop pod).
+# Requires: runpodctl installed locally (https://github.com/runpod/runpodctl)
 # Pass --no-shutdown to skip the shutdown step.
 set -euo pipefail
 
@@ -797,27 +797,27 @@ else
     echo "Check the log: outputs/train.log"
 fi
 
-# Shutdown the cloud instance
+# Stop the RunPod instance
 if [ "${NO_SHUTDOWN}" = "--no-shutdown" ]; then
     echo "Skipping shutdown (--no-shutdown)."
 else
-    echo "=== Shutting down cloud instance ==="
-    # Try Vast.ai first, then RunPod, then generic shutdown
-    if ssh -o ConnectTimeout=10 "${REMOTE}" "command -v vastai" &>/dev/null; then
-        INSTANCE_ID=$(ssh "${REMOTE}" "cat /var/vast/instance_id 2>/dev/null || echo ''")
-        if [ -n "${INSTANCE_ID}" ]; then
-            ssh "${REMOTE}" "vastai stop instance ${INSTANCE_ID}"
-            echo "Vast.ai instance ${INSTANCE_ID} stopped."
+    echo "=== Stopping RunPod instance ==="
+    if command -v runpodctl &>/dev/null; then
+        # Get pod ID from the SSH host or let runpodctl figure it out
+        POD_ID=$(ssh -o ConnectTimeout=10 "${REMOTE}" \
+            'echo "${RUNPOD_POD_ID:-}"' 2>/dev/null || echo "")
+        if [ -n "${POD_ID}" ]; then
+            runpodctl stop pod "${POD_ID}"
+            echo "RunPod pod ${POD_ID} stopped."
         else
-            echo "Could not determine Vast.ai instance ID. Stop manually."
+            echo "Could not detect RUNPOD_POD_ID on remote."
+            echo "Stop manually: runpodctl stop pod <pod-id>"
         fi
-    elif command -v runpodctl &>/dev/null; then
-        runpodctl stop pod
-        echo "RunPod instance stopped."
     else
-        echo "No known cloud CLI found. Shut down the instance manually."
-        echo "  Vast.ai: vastai stop instance <id>"
-        echo "  RunPod:  runpodctl stop pod"
+        echo "runpodctl not found. Install it:"
+        echo "  brew install runpod/runpodctl/runpodctl   # macOS"
+        echo "  # or: https://github.com/runpod/runpodctl"
+        echo "Then stop manually: runpodctl stop pod <pod-id>"
     fi
 fi
 
@@ -891,10 +891,10 @@ echo "Dataset uploaded: https://www.kaggle.com/datasets/${SLUG}"
 │  4. uv run python src/inference.py ...         # sanity check │
 │  5. git commit + push                                         │
 │                                                               │
-│  6. ./scripts/sync_up.sh user@gpu-box   # code + data + .env │
-│  7. ./scripts/run_remote.sh user@gpu-box                      │
-│  8. ./scripts/watch_remote.sh user@gpu-box                    │
-│     (polls until done → syncs outputs → shuts down instance)  │
+│  6. ./scripts/sync_up.sh user@runpod   # code + data + .env  │
+│  7. ./scripts/run_remote.sh user@runpod                       │
+│  8. ./scripts/watch_remote.sh user@runpod                     │
+│     (polls until done → syncs outputs → stops pod)            │
 │     ... go do something else ...                              │
 │                                                               │
 │  9. uv run python src/evaluate.py              # score        │
@@ -913,8 +913,8 @@ echo "Dataset uploaded: https://www.kaggle.com/datasets/${SLUG}"
 
 | Risk | Impact | Mitigation |
 |---|---|---|
-| 18 GB RAM too tight for QLoRA | Training OOMs on Mac | 1.5B is much easier on RAM. Use `max_seq_length=512`, `batch_size=1`. Fallback: CPU-only dry runs locally, train exclusively on cloud. |
-| PEFT/TRL MPS issues | Can't fine-tune locally | Use MLX-LM LoRA as fallback for local dev. Cloud for real training. |
+| 18 GB RAM too tight for QLoRA | Training OOMs on Mac | 1.5B is much easier on RAM. Use `max_seq_length=512`, `batch_size=1`. Fallback: CPU-only dry runs locally, train exclusively on RunPod. |
+| PEFT/TRL MPS issues | Can't fine-tune locally | Use MLX-LM LoRA as fallback for local dev. RunPod for real training. |
 | Qwen3 thinking mode wastes tokens | Slow inference, garbled output | Explicitly disable via `enable_thinking=False` in `apply_chat_template`. Strip `<think>` tags in post-processing as safety net. |
 | Kaggle notebook 9h limit | Not enough time for inference | 1.5B at 4-bit with greedy decoding → ~1-3h for 4000 translations. Plenty of headroom for ensembling. |
 | Sentence alignment is imperfect | Misaligned pairs degrade training | Start by training on doc-level pairs (no alignment needed). Add sentence-level pairs only when high-confidence. |
