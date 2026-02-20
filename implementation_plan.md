@@ -1,8 +1,8 @@
 # Deep Past Challenge — Implementation Plan
 
-**Goal:** Fine-tune Qwen3-4B-Instruct-2507 for Akkadian → English translation  
-**Dev:** MacBook Pro M3 18 GB · **Train:** Cloud CUDA (Vast.ai / RunPod)  
-**Tooling:** `uv`, public GitHub repo, SSH-based cloud workflow  
+**Goal:** Fine-tune Qwen3-1.5B-Instruct-2507 for Akkadian → English translation
+**Dev:** MacBook Pro M3 18 GB · **Train:** Cloud CUDA (Vast.ai / RunPod)
+**Tooling:** `uv`, public GitHub repo, SSH-based cloud workflow
 **Deadline:** March 23, 2026
 
 ---
@@ -12,11 +12,11 @@
 | Constraint | Implication |
 |---|---|
 | Code competition (Kaggle notebook) | Final submission = notebook, ≤9h, no internet. Model must be uploaded as Kaggle Dataset. |
-| Train: ~1500 doc-level pairs | Very low resource. Data augmentation from publications.csv is critical. |
-| Test: ~4000 sentence-level pairs | Need sentence segmentation + alignment strategy for training data too. |
+| Train: ~1500 doc-level pairs | Very low resource. Lexicon and alignment work are critical. |
+| Test: ~4000 sentence-level pairs | Training is doc-level, test is sentence-level — must handle this mismatch. |
 | Metric: geomean(BLEU, chrF++) | Optimize for both precision (BLEU) and character-level recall (chrF++). |
 | Heavy preprocessing needed | Determinatives, broken text markers, scribal notations, Ḫ→H substitution. |
-| Pre-trained models allowed | Can use Qwen3-4B or any public model as base. |
+| Pre-trained models allowed | Using Qwen3-1.5B: fast inference allows ensembling and iteration within 9h budget. |
 
 ---
 
@@ -37,11 +37,11 @@ deep-past-akkadian/
 ├── src/deep_past/
 │   ├── __init__.py
 │   ├── preprocess.py               # Akkadian text cleaning pipeline
-│   ├── align.py                    # sentence-level alignment from doc-level pairs
-│   ├── augment.py                  # extract translations from publications.csv
+│   ├── lexicon.py                  # proper noun + word lookup from OA_Lexicon_eBL.csv
 │   ├── dataset.py                  # HF Dataset construction + chat template formatting
 │   ├── train.py                    # QLoRA fine-tuning entry point
-│   ├── inference.py                # batch translation generation
+│   ├── inference.py                # batched translation generation
+│   ├── postprocess.py              # clean model output, fix proper nouns
 │   ├── evaluate.py                 # local BLEU + chrF++ scoring
 │   └── submit.py                   # produce submission.csv from predictions
 │
@@ -121,14 +121,12 @@ uv sync --extra cuda             # + flash-attn on CUDA
 
 ---
 
-## 4. Implementation Phases
+## 4. Part A — First Submission (End-to-End Baseline)
 
-### Phase 0: Data Pipeline 
+The goal is to get a score on the leaderboard as fast as possible. Train on
+document-level pairs directly (no sentence alignment yet), submit, then iterate.
 
-This is the highest-leverage work. Most competitors will use only the 1500 train
-pairs. Extracting and aligning the publications data is a major advantage.
-
-#### 0a. Preprocessing (`preprocess.py`)
+### A1. Preprocessing (`preprocess.py`)
 
 Implement the cleaning pipeline per competition instructions:
 
@@ -153,32 +151,15 @@ Key operations:
 6. Normalize determinatives (keep `{d}`, `{ki}` etc. as-is — they're semantically meaningful)
 7. Strip/normalize line numbers from both transliteration and translation
 
-#### 0b. Sentence Alignment (`align.py`)
+Apply the same cleaning to both `train.csv` transliterations and `test.csv`
+transliterations. Apply lighter cleaning (just whitespace normalization) to
+English translations.
 
-Critical: training data is document-level, test data is sentence-level.
+### A2. Dataset Construction (`dataset.py`)
 
-Use `Sentences_Oare_FirstWord_LinNum.csv` (provided by competition) to split
-document-level pairs into sentence-level pairs. Strategy:
-
-1. Parse line numbers from transliterations (lines like `1.`, `5.`, `10.` etc.)
-2. Use the sentence boundary file to split transliteration at sentence boundaries
-3. Align with translation text (heuristic: sentence count matching, length ratio, proper noun anchoring)
-4. Validate alignment quality on a sample
-
-#### 0c. Data Augmentation (`augment.py`)
-
-Extract additional training pairs from `publications.csv` (~880 PDFs, OCR'd):
-
-1. Identify pages with Akkadian content (`has_akkadian == True`)
-2. Pattern-match document IDs (CDLI IDs, museum numbers, publication labels) against `published_texts.csv`
-3. Extract translation blocks following transliterations
-4. Detect language (many translations are French/German/Turkish) and translate non-English to English via an LLM API or Helsinki-NLP OPUS models
-5. Align with corresponding transliterations from `published_texts.csv`
-6. Quality-filter: drop pairs with length ratio outliers, encoding issues, or low confidence
-
-**Expected yield:** Even extracting 500–1000 additional pairs would be a significant boost over the 1500 baseline.
-
-#### 0d. Dataset Construction (`dataset.py`)
+For the baseline, train on **document-level pairs** directly from `train.csv`.
+No sentence alignment needed yet — the model learns translation quality from
+complete documents.
 
 Format all pairs as instruction-tuned chat messages:
 
@@ -187,11 +168,11 @@ Format all pairs as instruction-tuned chat messages:
   "messages": [
     {
       "role": "system",
-      "content": "You are an expert translator of Old Assyrian Akkadian cuneiform texts. Translate the following transliterated Akkadian text into English. Produce a single fluent English sentence."
+      "content": "You are an expert translator of Old Assyrian Akkadian cuneiform texts into English. Determinatives in curly brackets classify nouns: {d} = deity, {ki} = place, {m} = masculine name, {mi} = feminine name. Words in ALL CAPS are Sumerian logograms. Words with a capitalized first letter are proper nouns. Translate the transliterated Akkadian into fluent English."
     },
     {
       "role": "user",
-      "content": "Translate: um-ma A-šùr-na-da ma-la a-ḫi-a"
+      "content": "Translate: um-ma A-šùr-na-da ma-la a-Hi-a"
     },
     {
       "role": "assistant",
@@ -201,43 +182,49 @@ Format all pairs as instruction-tuned chat messages:
 }
 ```
 
-Output: `data/processed/train.jsonl`, `data/processed/val.jsonl` (hold out ~10% for local eval).
+Output: `data/processed/train.jsonl`, `data/processed/val.jsonl`.
 
-Also build a version with **document context** — include preceding/following sentences as context in the user prompt, since translations often depend on surrounding text.
+**Validation split:** Hold out ~10% of **complete documents** (not random
+sentences) so there's no leakage. This gives ~150 docs for validation.
 
----
+### A3. Training (`train.py`)
 
-### Phase 1: Baseline Training
-
-#### 1a. Training Script (`train.py`)
+QLoRA fine-tuning with PEFT + TRL (not Unsloth — avoid MPS compatibility issues):
 
 ```python
-# Simplified flow — actual script reads from config YAML
-
-from unsloth import FastLanguageModel  # or use raw PEFT if Unsloth doesn't support MPS
+from peft import LoraConfig, get_peft_model, TaskType
 from trl import SFTTrainer, SFTConfig
+from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 from datasets import load_dataset
 import yaml, sys
 
 def main():
     cfg = yaml.safe_load(open(sys.argv[1]))
 
-    model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name=cfg["model_name"],     # "Qwen/Qwen3-4B-Instruct-2507"
-        max_seq_length=cfg["max_seq_length"],  # 1024 local, 2048 cloud
-        load_in_4bit=cfg["load_in_4bit"],      # True
+    bnb_config = BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_quant_type="nf4",
+        bnb_4bit_compute_dtype="bfloat16",
     )
 
-    model = FastLanguageModel.get_peft_model(
-        model,
+    model = AutoModelForCausalLM.from_pretrained(
+        cfg["model_name"],
+        quantization_config=bnb_config,
+        device_map="auto",
+    )
+    tokenizer = AutoTokenizer.from_pretrained(cfg["model_name"])
+
+    lora_config = LoraConfig(
         r=cfg.get("lora_r", 32),
         lora_alpha=cfg.get("lora_alpha", 64),
-        target_modules=cfg.get("target_modules", [
+        target_modules=[
             "q_proj", "k_proj", "v_proj", "o_proj",
-            "gate_proj", "up_proj", "down_proj"
-        ]),
+            "gate_proj", "up_proj", "down_proj",
+        ],
         lora_dropout=0.05,
+        task_type=TaskType.CAUSAL_LM,
     )
+    model = get_peft_model(model, lora_config)
 
     dataset = load_dataset("json", data_files=cfg["train_data"], split="train")
 
@@ -263,11 +250,9 @@ def main():
     model.save_pretrained(cfg["output_dir"] + "/final")
 ```
 
-#### 1b. Config Files
-
-**`configs/local.yaml`** — Mac M3 quick iteration:
+**Config: `configs/local.yaml`** — Mac M3 quick iteration:
 ```yaml
-model_name: "Qwen/Qwen3-4B-Instruct-2507"
+model_name: "Qwen/Qwen3-1.5B-Instruct-2507"
 max_seq_length: 512
 load_in_4bit: true
 train_data: "data/processed/train_small.jsonl"   # 100 samples
@@ -280,9 +265,9 @@ lora_r: 16
 run_name: "local-smoke-test"
 ```
 
-**`configs/cloud.yaml`** — full CUDA training:
+**Config: `configs/cloud.yaml`** — full CUDA training:
 ```yaml
-model_name: "Qwen/Qwen3-4B-Instruct-2507"
+model_name: "Qwen/Qwen3-1.5B-Instruct-2507"
 max_seq_length: 2048
 load_in_4bit: true
 train_data: "data/processed/train_full.jsonl"
@@ -296,37 +281,112 @@ lora_alpha: 64
 run_name: "cloud-full-v1"
 ```
 
----
+### A4. Inference (`inference.py`)
 
-### Phase 2: Evaluation & Iteration 
-
-#### 2a. Inference (`inference.py`)
-
-Batch translate all test transliterations:
+Batched inference with Qwen3 thinking mode explicitly disabled:
 
 ```python
 def translate_batch(model, tokenizer, texts, cfg):
-    """Generate translations with configurable decoding."""
+    """Batched translation with left-padding for efficiency."""
+    tokenizer.padding_side = "left"
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
     results = []
-    for text in texts:
-        messages = [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": f"Translate: {text}"},
-        ]
-        input_ids = tokenizer.apply_chat_template(messages, return_tensors="pt")
-        output = model.generate(
-            input_ids,
-            max_new_tokens=cfg.get("max_new_tokens", 512),
-            temperature=cfg.get("temperature", 0.7),
-            top_p=cfg.get("top_p", 0.8),
-            do_sample=cfg.get("do_sample", True),
-            num_beams=cfg.get("num_beams", 1),
+    batch_size = cfg.get("inference_batch_size", 8)
+
+    # Sort by length for better batching, track original indices
+    indexed = sorted(enumerate(texts), key=lambda x: len(x[1]))
+
+    for i in range(0, len(indexed), batch_size):
+        batch = indexed[i:i + batch_size]
+        prompts = []
+        for _, text in batch:
+            messages = [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": f"Translate: {text}"},
+            ]
+            # Disable Qwen3 thinking mode
+            prompt = tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True,
+                enable_thinking=False,
+            )
+            prompts.append(prompt)
+
+        inputs = tokenizer(
+            prompts, return_tensors="pt", padding=True, truncation=True
+        ).to(model.device)
+
+        outputs = model.generate(
+            **inputs,
+            max_new_tokens=cfg.get("max_new_tokens", 256),
+            do_sample=False,      # greedy for speed + reproducibility
+            temperature=None,
+            top_p=None,
         )
-        results.append(tokenizer.decode(output[0][input_ids.shape[1]:], skip_special_tokens=True))
-    return results
+
+        for j, (orig_idx, _) in enumerate(batch):
+            decoded = tokenizer.decode(
+                outputs[j][inputs["input_ids"].shape[1]:],
+                skip_special_tokens=True,
+            )
+            results.append((orig_idx, decoded))
+
+    # Restore original order
+    results.sort(key=lambda x: x[0])
+    return [r[1] for r in results]
 ```
 
-#### 2b. Local Evaluation (`evaluate.py`)
+### A5. Post-processing (`postprocess.py`)
+
+Clean model output before writing submission:
+
+```python
+import re
+
+def postprocess(text: str) -> str:
+    """Clean up a single model output for submission."""
+    # Strip any residual thinking tokens or chat template artifacts
+    text = re.sub(r"<\|.*?\|>", "", text)
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
+
+    # Remove repeated phrases (common LLM failure mode)
+    text = remove_repetitions(text)
+
+    # Collapse whitespace, strip
+    text = re.sub(r"\s+", " ", text).strip()
+
+    # Ensure single sentence (take first sentence if multiple)
+    if not text:
+        text = "..."
+    return text
+
+def remove_repetitions(text: str) -> str:
+    """Remove consecutive duplicate phrases."""
+    words = text.split()
+    result = []
+    i = 0
+    while i < len(words):
+        # Check for repeated n-grams (length 3-10)
+        found_repeat = False
+        for n in range(10, 2, -1):
+            if i + 2 * n <= len(words):
+                chunk = words[i:i+n]
+                next_chunk = words[i+n:i+2*n]
+                if chunk == next_chunk:
+                    result.extend(chunk)
+                    i += 2 * n
+                    found_repeat = True
+                    break
+        if not found_repeat:
+            result.append(words[i])
+            i += 1
+    return " ".join(result)
+```
+
+### A6. Evaluation (`evaluate.py`)
 
 Score against validation set using SacreBLEU:
 
@@ -341,81 +401,159 @@ def score(predictions: list[str], references: list[str]) -> dict:
     return {"bleu": bleu.score, "chrfpp": chrf.score, "geomean": geomean}
 ```
 
-#### 2c. Iteration Strategy
+### A7. Submission Pipeline
 
-| Lever | What to try |
-|---|---|
-| More data | Extract more pairs from publications.csv |
-| System prompt | Add lexicon hints, determinative glossary |
-| Few-shot in prompt | Include 2–3 example translations as context |
-| LoRA rank | Sweep r=16, 32, 64 |
-| Learning rate | Sweep 1e-4 to 5e-4 |
-| Epochs | Watch for overfitting on val set |
-| Decoding | beam search vs sampling, temperature tuning |
-| Ensemble | Average predictions from multiple checkpoints |
+1. **Export**: Merge LoRA → base model (see `scripts/export_model.sh`)
+2. **Upload**: Push merged model to Kaggle Datasets
+3. **Notebook**: Load model, preprocess test.csv, generate, postprocess, write `submission.csv`
 
----
-
-### Phase 3: Kaggle Submission 
-
-#### 3a. Model Export (`export_model.sh`)
-
-```bash
-#!/usr/bin/env bash
-set -euo pipefail
-
-# Merge LoRA weights into base model
-python -c "
-from unsloth import FastLanguageModel
-model, tokenizer = FastLanguageModel.from_pretrained('outputs/checkpoints/cloud/final')
-model.save_pretrained_merged('outputs/merged/', tokenizer, save_method='merged_16bit')
-"
-
-# Quantize to GGUF Q4_K_M for smaller upload (optional, if using llama.cpp in notebook)
-# Or keep as safetensors if using transformers directly
-echo "Merged model at outputs/merged/"
-echo "Upload to Kaggle as a Dataset next."
-```
-
-#### 3b. Kaggle Dataset Upload (`upload_kaggle_dataset.sh`)
-
-```bash
-#!/usr/bin/env bash
-set -euo pipefail
-
-DATASET_SLUG="your-username/deep-past-qwen3-4b-akkadian"
-MODEL_DIR="outputs/merged"
-
-# Create Kaggle dataset metadata
-cat > "${MODEL_DIR}/dataset-metadata.json" << EOF
-{
-  "title": "Deep Past Qwen3-4B Akkadian",
-  "id": "${DATASET_SLUG}",
-  "licenses": [{ "name": "apache-2.0" }]
-}
-EOF
-
-kaggle datasets create -p "${MODEL_DIR}" --dir-mode zip
-# Subsequent updates:
-# kaggle datasets version -p "${MODEL_DIR}" -m "v2: more data" --dir-mode zip
-```
-
-#### 3c. Submission Notebook (`notebooks/submission.ipynb`)
-
-The notebook runs offline in ≤9h. Skeleton:
+The notebook skeleton (`notebooks/submission.ipynb`):
 
 ```python
-# Cell 1: Install deps (from Kaggle Dataset or pre-packaged wheels)
-# Cell 2: Load model from /kaggle/input/deep-past-qwen3-4b-akkadian/
-# Cell 3: Load + preprocess test.csv
-# Cell 4: Generate translations (batch, with progress bar)
-# Cell 5: Post-process (clean up artifacts, ensure one sentence per row)
+# Cell 1: Install deps (from pre-packaged Kaggle Dataset)
+# Cell 2: Load merged Qwen3-1.5B from /kaggle/input/...
+# Cell 3: Load + preprocess test.csv (same pipeline as training)
+# Cell 4: Batched translation generation (greedy, thinking disabled)
+# Cell 5: Post-process all outputs
 # Cell 6: Write submission.csv
 ```
 
+At 1.5B parameters with 4-bit quantization and greedy decoding, expect ~1-3
+seconds per translation → 4000 translations in ~1-3 hours, well within the 9h
+budget. This leaves room for ensembling later.
+
 ---
 
-## 5. Helper Scripts
+## 5. Part B — Iterative Improvements
+
+Each stage below is independent and can be pursued in any order based on
+expected impact. Each produces a new model version to submit.
+
+### B1. Lexicon Integration (`lexicon.py`)
+
+The competition provides `OA_Lexicon_eBL.csv` (all Old Assyrian words with
+dictionary entries) and `eBL_Dictionary.csv` (full Akkadian dictionary). This is
+free structured knowledge that the baseline ignores entirely.
+
+**Proper noun table:** Build a lookup from transliterated form → normalized
+English form for all entries where `type` is `PN` (person name), `GN`
+(geographic name), `DN` (divine name), etc. Use this in post-processing to
+correct proper noun spelling and capitalization in model output.
+
+**Prompt-time lexicon injection:** For each test transliteration, look up rare
+or ambiguous words in the lexicon and append their dictionary meanings to the
+user prompt:
+
+```json
+{
+  "role": "user",
+  "content": "Translate: um-ma A-šùr-na-da ma-la a-Hi-a\n\nLexicon hints:\n- um-ma: saying, thus\n- ma-la: as much as\n- a-Hi: brother"
+}
+```
+
+This is retrieval-augmented generation for free — no model retraining needed,
+just an inference-time enhancement. Can be tested immediately on the val set.
+
+**Synthetic lexicon pairs:** Create word-level and phrase-level training pairs
+from lexicon entries as a form of curriculum learning. Train the model on these
+first (or mix them in) so it learns the basic vocabulary before tackling full
+sentences.
+
+### B2. Sentence Alignment
+
+Training data is document-level (~1500 docs), test data is sentence-level
+(~4000 sentences from ~400 docs). Two complementary strategies:
+
+**Strategy A — Document context at inference:** Keep training on doc-level
+pairs. At inference, the test data groups sentences by `text_id` and orders them
+by `line_start`/`line_end`. For each sentence, include the surrounding
+transliteration lines as context in the prompt:
+
+```json
+{
+  "role": "user",
+  "content": "[Context: preceding lines...]\nTranslate this sentence: [target lines]\n[Context: following lines...]"
+}
+```
+
+This lets the model leverage document context without requiring aligned
+sentence-level training data.
+
+**Strategy B — Sentence-level training pairs:** Use
+`Sentences_Oare_FirstWord_LinNum.csv` to split transliterations at sentence
+boundaries. For the English side, split on sentence-ending punctuation (`.`,
+`!`, `?`) and align by:
+1. Matching sentence counts between transliteration and translation
+2. Using length ratios as a soft constraint
+3. Anchoring on proper nouns that appear in both sides
+
+Only use high-confidence alignments (where sentence counts match and proper
+nouns anchor correctly). Discard ambiguous cases rather than introducing noise.
+Validate on a manually-checked sample of ~50 documents.
+
+### B3. Improved System Prompt & Few-Shot
+
+The baseline system prompt is minimal. Improve it by:
+
+- Including a brief glossary of common determinatives and their meanings
+- Adding 2-3 example translation pairs directly in the system prompt (few-shot)
+- Describing the expected output style (academic translation conventions)
+
+Test variants on the validation set to measure impact:
+
+```
+Variant 1: Baseline prompt (current)
+Variant 2: + determinative glossary
+Variant 3: + 2 few-shot examples
+Variant 4: + lexicon hints (from B1)
+Variant 5: Combined best
+```
+
+### B4. Hyperparameter Sweeps
+
+Sweep these on the cloud, evaluating each on the val set:
+
+| Parameter | Values to try |
+|---|---|
+| LoRA rank (r) | 16, 32, 64 |
+| Learning rate | 1e-4, 2e-4, 5e-4 |
+| Epochs | 3, 5, 8 (watch val loss for overfitting) |
+| Max sequence length | 1024, 2048 |
+| LoRA alpha | 2×r (standard), 4×r |
+
+Track everything in W&B. Pick the best by geomean on the val set.
+
+### B5. Ensembling
+
+With Qwen3-1.5B, inference for 4000 translations takes ~1-3 hours. This leaves
+budget for multiple passes within the 9h Kaggle limit.
+
+**MBR Decoding (Minimum Bayes Risk):** For each input, generate N translations
+(e.g., N=5 with different temperatures or from different checkpoints). Score
+each candidate against all others using chrF++. Pick the candidate with the
+highest average similarity to the others — this is the one most likely to be
+correct.
+
+**Multi-checkpoint:** Save checkpoints at epochs 3, 5, 8. Generate from each,
+then select via MBR.
+
+**Multi-seed:** Train 2-3 models with different random seeds. Generate from
+each, select via MBR.
+
+### B6. Proper Noun Post-Processing
+
+The competition explicitly warns that "proper nouns in general are where most ML
+tasks underperform." Build a targeted fix:
+
+1. Extract all proper nouns from training translations (capitalized words)
+2. Cross-reference with `OA_Lexicon_eBL.csv` (type = PN, GN, DN, etc.)
+3. Build a fuzzy matching table: transliterated form → canonical English form
+4. In post-processing, find proper nouns in model output and replace with
+   canonical forms when fuzzy match confidence is high
+
+---
+
+## 6. Helper Scripts
 
 ### `scripts/download_data.sh`
 
@@ -423,7 +561,6 @@ The notebook runs offline in ≤9h. Skeleton:
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Requires: pip install kaggle, KAGGLE_USERNAME + KAGGLE_KEY in env or ~/.kaggle/kaggle.json
 COMPETITION="deep-past-initiative-machine-translation"
 
 mkdir -p data/raw
@@ -436,8 +573,6 @@ echo "Data downloaded to data/raw/"
 
 ```bash
 #!/usr/bin/env bash
-# Run ON the cloud machine after first SSH login.
-# Expects: Ubuntu + CUDA drivers pre-installed (standard on Vast.ai/RunPod)
 set -euo pipefail
 
 echo "=== Installing uv ==="
@@ -464,8 +599,6 @@ echo "cd ~/deep-past && uv run dp-train configs/cloud.yaml"
 
 ```bash
 #!/usr/bin/env bash
-# Sync code and data to cloud machine.
-# Usage: sync_up.sh user@host
 set -euo pipefail
 
 REMOTE="${1:?Usage: sync_up.sh user@host}"
@@ -487,8 +620,6 @@ echo "Synced to ${REMOTE}:~/deep-past/"
 
 ```bash
 #!/usr/bin/env bash
-# Pull checkpoints and predictions from cloud.
-# Usage: sync_down.sh user@host
 set -euo pipefail
 
 REMOTE="${1:?Usage: sync_down.sh user@host}"
@@ -504,8 +635,6 @@ echo "Downloaded outputs from ${REMOTE}"
 
 ```bash
 #!/usr/bin/env bash
-# Run training on cloud via SSH. Detaches with tmux so you can disconnect.
-# Usage: run_remote.sh user@host [config]
 set -euo pipefail
 
 REMOTE="${1:?Usage: run_remote.sh user@host [config]}"
@@ -540,7 +669,7 @@ from peft import PeftModel
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 base = AutoModelForCausalLM.from_pretrained(
-    'Qwen/Qwen3-4B-Instruct-2507', torch_dtype='auto', device_map='cpu'
+    'Qwen/Qwen3-1.5B-Instruct-2507', torch_dtype='auto', device_map='cpu'
 )
 model = PeftModel.from_pretrained(base, '${CHECKPOINT}')
 merged = model.merge_and_unload()
@@ -582,7 +711,7 @@ echo "Dataset uploaded: https://www.kaggle.com/datasets/${SLUG}"
 
 ---
 
-## 6. Typical Development Workflow
+## 7. Development Workflow
 
 ```
 ┌─────────────────────────────────────────────────────────┐
@@ -610,23 +739,13 @@ echo "Dataset uploaded: https://www.kaggle.com/datasets/${SLUG}"
 
 ---
 
-## 7. Risk Assessment & Mitigations
+## 8. Risk Assessment & Mitigations
 
 | Risk | Impact | Mitigation |
 |---|---|---|
-| 18 GB RAM too tight for QLoRA | Training OOMs on Mac | Use `max_seq_length=512`, `batch_size=1`. Fallback: develop locally with CPU-only dry runs, train exclusively on cloud. |
-| Unsloth doesn't support MPS | Can't fine-tune locally at all | Use raw PEFT + TRL (slower but works on MPS). Or use MLX-LM LoRA training. |
-| Publications data extraction is noisy | Low-quality augmented data | Quality filter aggressively. Use a validation-set perplexity gate. |
-| Kaggle notebook 9h limit | Model too slow for 4000 translations | Quantize to 4-bit GGUF, use llama.cpp or vLLM in notebook. Or use a smaller model if needed. |
-| Sentence alignment is imperfect | Misaligned pairs degrade training | Hold out aligned pairs for validation. Use the provided `Sentences_Oare_FirstWord_LinNum.csv`. |
-
----
-
-## 8. Timeline
-
-| Week | Focus | Deliverable |
-|---|---|---|
-| 1 (now) | Data pipeline: preprocess, align, augment | `data/processed/train_full.jsonl` |
-| 2 | Baseline training + eval loop | First model, validation scores |
-| 3 | Iteration: data augmentation, hyperparams, prompting | Best model candidate |
-| 4 | Kaggle notebook, model export, submission | Final submission by Mar 23 |
+| 18 GB RAM too tight for QLoRA | Training OOMs on Mac | 1.5B is much easier on RAM. Use `max_seq_length=512`, `batch_size=1`. Fallback: CPU-only dry runs locally, train exclusively on cloud. |
+| PEFT/TRL MPS issues | Can't fine-tune locally | Use MLX-LM LoRA as fallback for local dev. Cloud for real training. |
+| Qwen3 thinking mode wastes tokens | Slow inference, garbled output | Explicitly disable via `enable_thinking=False` in `apply_chat_template`. Strip `<think>` tags in post-processing as safety net. |
+| Kaggle notebook 9h limit | Not enough time for inference | 1.5B at 4-bit with greedy decoding → ~1-3h for 4000 translations. Plenty of headroom for ensembling. |
+| Sentence alignment is imperfect | Misaligned pairs degrade training | Start by training on doc-level pairs (no alignment needed). Add sentence-level pairs only when high-confidence. |
+| Proper nouns misspelled by model | Hurts both BLEU and chrF++ | Post-process with lexicon-based proper noun correction (B6). |
