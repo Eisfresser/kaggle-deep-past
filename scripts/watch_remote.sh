@@ -22,7 +22,7 @@ while true; do
     if ssh -o ConnectTimeout=10 "${REMOTE}" "tmux has-session -t ${SESSION} 2>/dev/null"; then
         # Still running — show last line of log
         LAST_LINE=$(ssh -o ConnectTimeout=10 "${REMOTE}" \
-            "tail -1 ~/deep-past/outputs/train.log 2>/dev/null" || echo "(no log yet)")
+            "tail -1 /workspace/deep-past/outputs/train.log 2>/dev/null" || echo "(no log yet)")
         echo "[$(date +%H:%M:%S)] Training in progress... ${LAST_LINE}"
         sleep "${POLL_INTERVAL}"
     else

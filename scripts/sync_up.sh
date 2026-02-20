@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Sync code, data, and .env (for WANDB_API_KEY etc.) to RunPod machine.
+# Targets /workspace/deep-past (persistent volume — survives pod restarts).
 # Usage: sync_up.sh user@host
 set -euo pipefail
 
@@ -13,6 +14,6 @@ rsync -avz --progress \
     --exclude 'outputs/merged' \
     --exclude 'wandb' \
     --exclude '.venv' \
-    "${PROJECT_DIR}/" "${REMOTE}:~/deep-past/"
+    "${PROJECT_DIR}/" "${REMOTE}:/workspace/deep-past/"
 
-echo "Synced to ${REMOTE}:~/deep-past/"
+echo "Synced to ${REMOTE}:/workspace/deep-past/"
