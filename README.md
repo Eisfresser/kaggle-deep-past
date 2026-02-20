@@ -24,9 +24,20 @@ uv run python src/inference.py configs/local.yaml --split val
 
 ```
 
-Cloud runs
+Cloud sweep
 ```bash
+# setup runpod
 ./scripts/setup_cloud.sh https://github.com/Eisfresser/kaggle-deep-past.git
+
+# upload latest code and .env
+scripts/sync_up.sh
+
+# start sweep
+scripts/run_remote.sh --sweep
+
+# wait for completion, syncs down automatically and stops the pod
+./scripts/watch_remote.sh
+
 
 
 ```

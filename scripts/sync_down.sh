@@ -8,4 +8,7 @@ source "${PROJECT_DIR}/scripts/_resolve_remote.sh" "${1:-}"
 rsync -avz --progress -e "ssh -p ${SSH_PORT}" \
     "${REMOTE}:/workspace/deep-past/outputs/" "${PROJECT_DIR}/outputs/"
 
-echo "Downloaded outputs from ${REMOTE}"
+rsync -avz --progress -e "ssh -p ${SSH_PORT}" \
+    "${REMOTE}:/workspace/sweeps/" "${PROJECT_DIR}/sweeps/"
+
+echo "Downloaded outputs and sweeps from ${REMOTE}"

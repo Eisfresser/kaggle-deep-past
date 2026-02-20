@@ -1,6 +1,7 @@
 # Project-specific
 data/
 outputs/
+sweeps/
 wandb/
 
 # Byte-compiled / optimized / DLL files

@@ -51,14 +51,15 @@ if [ "${NO_SHUTDOWN}" = "--no-shutdown" ]; then
 else
     echo "=== Stopping RunPod instance ==="
     if command -v runpodctl &>/dev/null; then
-        # Get pod ID from the SSH host or let runpodctl figure it out
+        # RUNPOD_POD_ID isn't in SSH sessions, but is in PID 1's environment
         POD_ID=$(ssh -p "${SSH_PORT}" -o ConnectTimeout=10 "${REMOTE}" \
-            'echo "${RUNPOD_POD_ID:-}"' 2>/dev/null || echo "")
+            "cat /proc/1/environ | tr '\0' '\n' | grep RUNPOD_POD_ID" 2>/dev/null \
+            | cut -d= -f2)
         if [ -n "${POD_ID}" ]; then
             runpodctl stop pod "${POD_ID}"
             echo "RunPod pod ${POD_ID} stopped."
         else
-            echo "Could not detect RUNPOD_POD_ID on remote."
+            echo "Could not detect RUNPOD_POD_ID from remote /proc/1/environ."
             echo "Stop manually: runpodctl stop pod <pod-id>"
         fi
     else
