@@ -123,6 +123,7 @@ def main():
             output_dir=output_dir,
             max_length=max_seq_length,
             per_device_train_batch_size=cfg.get("batch_size", 2),
+            per_device_eval_batch_size=cfg.get("eval_batch_size", 1),
             gradient_accumulation_steps=cfg.get("grad_accum", 4),
             num_train_epochs=cfg.get("epochs", 3),
             learning_rate=float(cfg.get("lr", 2e-4)),

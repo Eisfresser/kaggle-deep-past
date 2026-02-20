@@ -20,9 +20,9 @@ echo "Polling every ${POLL_INTERVAL}s. Press Ctrl-C to stop watching (training c
 while true; do
     # Check if the tmux session still exists on the remote
     if ssh -p "${SSH_PORT}" -o ConnectTimeout=10 "${REMOTE}" "tmux has-session -t ${SESSION} 2>/dev/null"; then
-        # Still running — show last line of log
+        # Still running — show last line of log (try sweep.log first, then train.log)
         LAST_LINE=$(ssh -p "${SSH_PORT}" -o ConnectTimeout=10 "${REMOTE}" \
-            "tail -1 /workspace/deep-past/outputs/train.log 2>/dev/null" || echo "(no log yet)")
+            "tail -1 /workspace/deep-past/outputs/sweep.log 2>/dev/null || tail -1 /workspace/deep-past/outputs/train.log 2>/dev/null" || echo "(no log yet)")
         echo "[$(date +%H:%M:%S)] Training in progress... ${LAST_LINE}"
         sleep "${POLL_INTERVAL}"
     else
