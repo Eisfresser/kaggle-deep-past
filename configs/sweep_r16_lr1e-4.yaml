@@ -12,5 +12,5 @@ lr: 1e-4
 lora_r: 16
 lora_alpha: 32
 report_to: "wandb"
-inference_batch_size: 16
+inference_batch_size: 4
 max_new_tokens: 256

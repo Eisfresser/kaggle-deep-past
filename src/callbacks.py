@@ -100,6 +100,11 @@ class GenerationEvalCallback(TrainerCallback):
         model.eval()
 
         predictions = self._generate(model)
+
+        # Free KV-cache and generation buffers before resuming training
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
         results = score(predictions, self.references)
         results["epoch"] = epoch
         self.last_scores = results

@@ -132,6 +132,8 @@ def main():
             save_strategy="epoch",
             eval_strategy="epoch" if eval_dataset is not None else "no",
             bf16=True,
+            gradient_checkpointing=True,
+            gradient_checkpointing_kwargs={"use_reentrant": False},
             dataloader_pin_memory=False,
             report_to=cfg.get("report_to", "wandb"),
             run_name=cfg.get("run_name", "deep-past"),
